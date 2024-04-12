@@ -1,27 +1,35 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { FindManyOptions, Repository } from 'typeorm';
+import { CreateCoffeeDto } from './dto/create-coffee.dto';
+import { UpdateCoffeeDto } from './dto/update-coffee.dto';
 import { Coffee } from './entities/coffee.entity';
+import { Flavor } from './entities/flavor.entity';
 
 @Injectable()
 export class CoffeesService {
-    private coffees: Coffee[] = [
-        {
-            id: 1,
-            name: 'Shipwreck Roast',
-            brand: 'Buddy Brew',
-            flavors: ['chocolate', 'vanilla']
-        }
-    ];
+
+    constructor(
+        @InjectRepository(Coffee)
+        private readonly coffeeRepository: Repository<Coffee>,
+
+        @InjectRepository(Flavor)
+        private readonly flavorRepository: Repository<Flavor>,
+    ) { }
 
     //* (GET) http:localhost:3000/coffees
-    findAll() {
-        return this.coffees;
+    findAll(filter?: FindManyOptions<Coffee>) {
+        return this.coffeeRepository.find({ ...filter, relations: { flavors: true } });
     }
 
     //* (GET) http:localhost:3000/coffees/1
-    findOne(id: number) {
-        const coffee =  this.coffees.find(item => item.id === id)
+    async findOne(id: number) {
+        const coffee = await this.coffeeRepository.findOne({ 
+            where: { id }, 
+            relations: { flavors: true }
+        })
 
-        if(!coffee) {
+        if (!coffee) {
             throw new NotFoundException(`Coffee ${id} doesn't exist`)
         }
 
@@ -29,42 +37,55 @@ export class CoffeesService {
     }
 
     //* (POST) http:localhost:3000/coffees
-    create(coffee: Partial<Coffee>) {
-        this.coffees.push({...coffee, id: this.coffees.length + 1} as Coffee);
+    async create(coffee: CreateCoffeeDto) {
+        
+        const flavors = await Promise.all(
+            coffee.flavors?.map(name => this.preloadFlavorByName(name))
+        )
+        
+        const newCoffee = this.coffeeRepository.create({
+            ...coffee,
+            flavors
+        });
 
-        return coffee;
+        return this.coffeeRepository.save(newCoffee);
     }
 
     //* (PATCH | PUT) http:localhost:3000/coffees/1
-    update(id: number, updatedCoffee: Partial<Coffee>) {
-        const coffeeIndex = this.findIndex(id);
+    async update(id: number, updatedCoffee: UpdateCoffeeDto) {
+        const flavors = updatedCoffee.flavors && 
+        (await Promise.all(
+            updatedCoffee.flavors.map(name => this.preloadFlavorByName(name))
+        ));
+        
+        const coffee = await this.coffeeRepository.preload({
+            id,
+            ...updatedCoffee,
+            flavors
+        })
 
-        if (coffeeIndex >= 0) {
-            this.coffees[coffeeIndex] = {
-                ...this.coffees[coffeeIndex],
-                ...updatedCoffee
-            };
-
-            return true
+        if (!coffee) {
+            throw new NotFoundException(`Coffee ${id} doesn't exist`)
         }
-
-        return false
+ 
+        return this.coffeeRepository.save(coffee);
     }
 
     //* (DELETE) http:localhost:3000/coffees/1
-    remove(id: number) {
-        const coffeeIndex = this.findIndex(id);
-
-        if (coffeeIndex >= 0) {
-            this.coffees.splice(coffeeIndex, 1);
-
-            return true
-        }
-
-        return false
+    async remove(id: number) {
+        const coffee = await this.findOne(id);
+        return this.coffeeRepository.remove(coffee);
     }
 
-    private findIndex(id: string | number) {
-        return this.coffees.findIndex(coffee => coffee.id === +id);
+    private async preloadFlavorByName(name: string): Promise<Flavor> {
+        const existingFlavor = await this.flavorRepository.findOne({
+            where: { name }
+        })
+
+        if(existingFlavor) {
+            return existingFlavor;
+        }
+
+        return this.flavorRepository.create({ name });
     }
 }
